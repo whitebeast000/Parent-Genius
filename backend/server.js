@@ -20,6 +20,7 @@ const trainingRoutes = require("./routes/training");
 const communityRoutes = require("./routes/community");
 const therapyRoutes = require("./routes/therapy");
 const resourcesRoutes = require("./routes/resources");
+const courseRoutes = require("./routes/courses");
 
 
 app.use(cors());
@@ -28,6 +29,7 @@ app.use("/api/training", trainingRoutes);
 app.use("/api/community", communityRoutes);
 app.use("/api/therapy", therapyRoutes);
 app.use("/api/resources", resourcesRoutes);
+app.use("/api/courses", courseRoutes);
 
 
 const PORT = 3000;
