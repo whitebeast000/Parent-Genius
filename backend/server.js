@@ -21,15 +21,21 @@ const communityRoutes = require("./routes/community");
 const therapyRoutes = require("./routes/therapy");
 const resourcesRoutes = require("./routes/resources");
 const courseRoutes = require("./routes/courses");
+const bookmarksRoutes = require("./routes/bookmarks");
 
 
-app.use(cors());
+app.use(cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
+}));
 app.use(express.json());
 app.use("/api/training", trainingRoutes);
 app.use("/api/community", communityRoutes);
 app.use("/api/therapy", therapyRoutes);
 app.use("/api/resources", resourcesRoutes);
 app.use("/api/courses", courseRoutes);
+app.use("/api/bookmarks", bookmarksRoutes);
 
 
 const PORT = 3000;
@@ -1801,9 +1807,486 @@ app.post("/api/training/complete", verifyToken, async (req, res) => {
 
 
 
+// ========================================
+// CHANGE PASSWORD
+// PUT /api/change-password
+// ========================================
+
+app.put("/api/change-password", verifyToken, async (req, res) => {
+
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+
+        return res.status(400).json({
+            message: "Current password and new password are required."
+        });
+
+    }
+
+
+    if (newPassword.length < 6) {
+
+        return res.status(400).json({
+            message: "New password must be at least 6 characters long."
+        });
+
+    }
+
+
+    try {
+
+        // Get logged-in user
+
+        const result = await pool.query(
+            `SELECT password
+             FROM users
+             WHERE id = $1`,
+            [req.user.userId]
+        );
+
+
+        if (result.rows.length === 0) {
+
+            return res.status(404).json({
+                message: "User not found."
+            });
+
+        }
+
+
+        const user = result.rows[0];
+
+
+        // Check current password
+
+        if (currentPassword !== user.password) {
+
+           return res.status(400).json({message:"Current password is incorrect."
+            });
+
+        }
+
+
+        // Update password
+
+        await pool.query(
+            `UPDATE users
+             SET password = $1
+             WHERE id = $2`,
+            [newPassword, req.user.userId]
+        );
+
+
+        res.json({
+            message: "Password changed successfully."
+        });
+
+
+    } catch (error) {
+
+        console.error("Change password error:", error);
+
+        res.status(500).json({
+            message: "Server error."
+        });
+
+    }
+
+});
 
 
 
+
+// GET reminder settings
+app.get("/api/reminders", verifyToken, async (req, res) => {
+    try {
+        let result = await pool.query(
+            "SELECT * FROM user_reminders WHERE user_id = $1",
+            [req.user.userId]
+        );
+
+        if (result.rows.length === 0) {
+            result = await pool.query(
+                `INSERT INTO user_reminders (user_id)
+                 VALUES ($1)
+                 RETURNING *`,
+                [req.user.userId]
+            );
+        }
+
+        res.json(result.rows[0]);
+
+    } catch (error) {
+        console.error("Get reminders error:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+
+// UPDATE reminder settings
+app.put("/api/reminders", verifyToken, async (req, res) => {
+
+    const {
+        challenges,
+        courses,
+        resources,
+        therapy,
+        community,
+        training
+    } = req.body;
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO user_reminders
+            (user_id, challenges, courses, resources, therapy, community, training)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                challenges = EXCLUDED.challenges,
+                courses = EXCLUDED.courses,
+                resources = EXCLUDED.resources,
+                therapy = EXCLUDED.therapy,
+                community = EXCLUDED.community,
+                training = EXCLUDED.training
+
+            RETURNING *`,
+            [
+                req.user.userId,
+                challenges,
+                courses,
+                resources,
+                therapy,
+                community,
+                training
+            ]
+        );
+
+        res.json({
+            message: "Reminder settings updated successfully.",
+            reminders: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error("Update reminders error:", error);
+        res.status(500).json({ message: "Server error." });
+    }
+});
+
+
+app.post("/api/subscription", verifyToken, async (req, res) => {
+    const { plan, price } = req.body;
+
+    if (!plan || !price) {
+        return res.status(400).json({
+            message: "Subscription plan and price are required."
+        });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO subscriptions (user_id, plan, price, status)
+             VALUES ($1, $2, $3, 'active')
+             ON CONFLICT (user_id)
+             DO UPDATE SET
+                plan = EXCLUDED.plan,
+                price = EXCLUDED.price,
+                status = 'active',
+                created_at = CURRENT_TIMESTAMP
+             RETURNING *`,
+            [req.user.userId, plan, price]
+        );
+
+        res.json({
+            message: "Subscription activated successfully.",
+            subscription: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error("Subscription error:", error);
+        res.status(500).json({
+            message: "Server error."
+        });
+    }
+});
+
+
+// ADMIN PANEL ROUTES - Add this before app.listen()
+
+// GET all records from any table
+app.get("/api/:table", async (req, res) => {
+    try {
+        const { table } = req.params;
+        const allowedTables = ['users', 'courses', 'subscriptions', 'resources', 'profiles', 'children', 'community_solutions', 'course_feedback', 'course_chapters', 'training_content', 'training_progress', 'therapy_requests', 'user_course_progress', 'bookmarks', 'challenge_progress', 'resource_orders', 'resource_trials', 'newsletter_subscribers', 'parent_questionnaire', 'password_resets', 'user_reminders', 'user_progress', 'user_training_progress'];
+        
+        if (!allowedTables.includes(table)) {
+            return res.status(400).json({ message: "Invalid table" });
+        }
+
+        const result = await pool.query(`SELECT * FROM ${table} LIMIT 100`);
+        res.json({ count: result.rows.length, data: result.rows });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Server error" });
+    }
+});
+
+// GET single record
+app.get("/api/:table/:id", async (req, res) => {
+    try {
+        const { table, id } = req.params;
+        const result = await pool.query(`SELECT * FROM ${table} WHERE id = $1`, [id]);
+        res.json(result.rows[0] || {});
+    } catch (error) {
+        res.status(500).json({ message: "Server error" });
+    }
+});
+
+// CREATE new record
+app.post("/api/:table", async (req, res) => {
+    try {
+        const { table } = req.params;
+        const data = req.body;
+        const columns = Object.keys(data);
+        const values = Object.values(data);
+        const placeholders = columns.map((_, i) => `$${i + 1}`).join(',');
+        
+        const query = `INSERT INTO ${table} (${columns.join(',')}) VALUES (${placeholders}) RETURNING *`;
+        const result = await pool.query(query, values);
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error(error);
+        res.status(400).json({ message: error.message });
+    }
+});
+
+// UPDATE record
+app.put("/api/:table/:id", async (req, res) => {
+    try {
+        const { table, id } = req.params;
+        const data = req.body;
+        const columns = Object.keys(data);
+        const values = Object.values(data);
+        const setClause = columns.map((col, i) => `${col} = $${i + 1}`).join(',');
+        
+        const query = `UPDATE ${table} SET ${setClause} WHERE id = $${columns.length + 1} RETURNING *`;
+        const result = await pool.query(query, [...values, id]);
+        res.json(result.rows[0]);
+    } catch (error) {
+        console.error(error);
+        res.status(400).json({ message: error.message });
+    }
+});
+
+// DELETE record
+app.delete("/api/:table/:id", async (req, res) => {
+    try {
+        const { table, id } = req.params;
+        await pool.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
+        res.json({ message: "Deleted successfully" });
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+});
+
+
+
+// ============================================================
+// ADMIN PANEL ROUTES - Add these to your server.js
+// Add BEFORE app.listen() at the very end
+// ============================================================
+
+// Generic GET all records
+app.get("/api/:table", async (req, res) => {
+    try {
+        const { table } = req.params;
+        
+        // Whitelist of allowed tables
+        const allowedTables = [
+            'users', 'courses', 'subscriptions', 'resources', 
+            'profiles', 'children', 'community_solutions', 
+            'course_feedback', 'newsletter_subscribers',
+            'course_chapters', 'training_content', 'training_progress',
+            'therapy_requests', 'user_course_progress', 'bookmarks',
+            'challenge_progress', 'resource_orders', 'resource_trials',
+            'parent_questionnaire', 'password_resets', 'user_reminders',
+            'user_progress', 'user_training_progress'
+        ];
+        
+        if (!allowedTables.includes(table)) {
+            return res.status(400).json({ message: "Invalid table" });
+        }
+
+        const result = await pool.query(`SELECT * FROM ${table} LIMIT 1000`);
+        
+        // Return as array for consistency
+        res.json(result.rows);
+        
+    } catch (error) {
+        console.error("GET error:", error);
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+});
+
+// Generic GET single record
+app.get("/api/:table/:id", async (req, res) => {
+    try {
+        const { table, id } = req.params;
+        
+        const allowedTables = [
+            'users', 'courses', 'subscriptions', 'resources', 
+            'profiles', 'children', 'community_solutions', 
+            'course_feedback', 'newsletter_subscribers',
+            'course_chapters', 'training_content', 'training_progress',
+            'therapy_requests', 'user_course_progress', 'bookmarks',
+            'challenge_progress', 'resource_orders', 'resource_trials',
+            'parent_questionnaire', 'password_resets', 'user_reminders',
+            'user_progress', 'user_training_progress'
+        ];
+        
+        if (!allowedTables.includes(table)) {
+            return res.status(400).json({ message: "Invalid table" });
+        }
+
+        const result = await pool.query(
+            `SELECT * FROM ${table} WHERE id = $1`,
+            [id]
+        );
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Record not found" });
+        }
+        
+        res.json(result.rows[0]);
+        
+    } catch (error) {
+        console.error("GET single error:", error);
+        res.status(500).json({ message: "Server error" });
+    }
+});
+
+// Generic CREATE record
+app.post("/api/:table", async (req, res) => {
+    try {
+        const { table } = req.params;
+        const data = req.body;
+        
+        const allowedTables = [
+            'users', 'courses', 'subscriptions', 'resources', 
+            'profiles', 'children', 'community_solutions', 
+            'course_feedback', 'newsletter_subscribers',
+            'course_chapters', 'training_content', 'training_progress',
+            'therapy_requests', 'user_course_progress', 'bookmarks',
+            'challenge_progress', 'resource_orders', 'resource_trials',
+            'parent_questionnaire', 'password_resets', 'user_reminders',
+            'user_progress', 'user_training_progress'
+        ];
+        
+        if (!allowedTables.includes(table)) {
+            return res.status(400).json({ message: "Invalid table" });
+        }
+
+        const columns = Object.keys(data).filter(key => data[key] !== '');
+        const values = columns.map(col => data[col]);
+        const placeholders = columns.map((_, i) => `$${i + 1}`).join(',');
+        
+        const query = `INSERT INTO ${table} (${columns.join(',')}) VALUES (${placeholders}) RETURNING *`;
+        const result = await pool.query(query, values);
+        
+        res.status(201).json(result.rows[0]);
+        
+    } catch (error) {
+        console.error("POST error:", error);
+        res.status(400).json({ message: "Error creating record", error: error.message });
+    }
+});
+
+// Generic UPDATE record
+app.put("/api/:table/:id", async (req, res) => {
+    try {
+        const { table, id } = req.params;
+        const data = req.body;
+        
+        const allowedTables = [
+            'users', 'courses', 'subscriptions', 'resources', 
+            'profiles', 'children', 'community_solutions', 
+            'course_feedback', 'newsletter_subscribers',
+            'course_chapters', 'training_content', 'training_progress',
+            'therapy_requests', 'user_course_progress', 'bookmarks',
+            'challenge_progress', 'resource_orders', 'resource_trials',
+            'parent_questionnaire', 'password_resets', 'user_reminders',
+            'user_progress', 'user_training_progress'
+        ];
+        
+        if (!allowedTables.includes(table)) {
+            return res.status(400).json({ message: "Invalid table" });
+        }
+
+        const columns = Object.keys(data).filter(key => data[key] !== '');
+        const values = columns.map(col => data[col]);
+        
+        if (columns.length === 0) {
+            return res.status(400).json({ message: "No fields to update" });
+        }
+        
+        const setClause = columns.map((col, i) => `${col} = $${i + 1}`).join(',');
+        const query = `UPDATE ${table} SET ${setClause} WHERE id = $${columns.length + 1} RETURNING *`;
+        
+        const result = await pool.query(query, [...values, id]);
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Record not found" });
+        }
+        
+        res.json(result.rows[0]);
+        
+    } catch (error) {
+        console.error("PUT error:", error);
+        res.status(400).json({ message: "Error updating record", error: error.message });
+    }
+});
+
+// Generic DELETE record
+app.delete("/api/:table/:id", async (req, res) => {
+    try {
+        const { table, id } = req.params;
+        
+        const allowedTables = [
+            'users', 'courses', 'subscriptions', 'resources', 
+            'profiles', 'children', 'community_solutions', 
+            'course_feedback', 'newsletter_subscribers',
+            'course_chapters', 'training_content', 'training_progress',
+            'therapy_requests', 'user_course_progress', 'bookmarks',
+            'challenge_progress', 'resource_orders', 'resource_trials',
+            'parent_questionnaire', 'password_resets', 'user_reminders',
+            'user_progress', 'user_training_progress'
+        ];
+        
+        if (!allowedTables.includes(table)) {
+            return res.status(400).json({ message: "Invalid table" });
+        }
+
+        const result = await pool.query(
+            `DELETE FROM ${table} WHERE id = $1 RETURNING id`,
+            [id]
+        );
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: "Record not found" });
+        }
+        
+        res.json({ message: "Deleted successfully" });
+        
+    } catch (error) {
+        console.error("DELETE error:", error);
+        res.status(400).json({ message: "Error deleting record" });
+    }
+});
+
+// ============================================================
+// END OF ADMIN ROUTES
+// ============================================================
 
 app.listen(PORT, () => {
         console.log(`Server is running on port ${PORT}`);
